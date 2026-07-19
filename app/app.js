@@ -4,7 +4,8 @@ const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const GOOGLE_REVIEW_URL = "https://g.page/r/CUlTODw6By7OEAE/review";
 
 const S = { view:"home", items:[], jobs:[], customers:[], techs:[], issues:[], expenses:[], user:null,
-  loaded:false, q:"", period:"week", job:null, busy:false, parts:[], photos:[], issueCart:[], receipt:"" };
+  loaded:false, q:"", period:"week", job:null, busy:false, parts:[], photos:[],
+  issueCart:[], receipt:"", bill:[], billCust:null, lastInvoice:null };
 const $ = id => document.getElementById(id);
 const money = n => "\u20B9" + Number(n||0).toLocaleString("en-IN",{maximumFractionDigits:2});
 const esc = s => String(s==null?"":s).replace(/[<>&"]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]));
@@ -22,19 +23,19 @@ function toast(m){ const t=document.createElement("div"); t.textContent=m;
 
 const ADMIN_TILES = [
   ["\uD83D\uDCDE","Service","#f59e0b","Jobs \u00B7 Calls","jobs"],
-  ["\uD83D\uDCE6","Inventory","#06b6d4","Items \u00B7 Stock","inventory"],
+  ["\uD83E\uDDFE","Billing","#e11d2a","Create invoice","billing"],
   ["\uD83D\uDE9A","Issue Stock","#22c55e","To technician","issue"],
   ["\uD83D\uDCB8","Expenses","#f43f5e","All staff","expenses"],
-  ["\uD83D\uDC65","Customers","#8b5cf6","Parties","customers"],
-  ["\uD83D\uDCCA","Reports","#ec4899","Service summary","report"]
+  ["\uD83D\uDCCA","Reports","#ec4899","Service \u00B7 Expense","report"],
+  ["\uD83D\uDCCB","Issue Log","#14b8a6","Delivery record","issuelog"]
 ];
 const TECH_TILES = [
   ["\uD83D\uDCDE","My Jobs","#f59e0b","Service calls","jobs"],
   ["\u2795","New Call","#22c55e","Log complaint","newjob"],
+  ["\uD83E\uDDFE","Billing","#e11d2a","Bill on site","billing"],
   ["\uD83D\uDCB8","My Expenses","#f43f5e","Add \u00B7 Report","expenses"],
   ["\uD83D\uDE9A","My Stock","#14b8a6","Items with me","mystock"],
-  ["\uD83D\uDCE6","Inventory","#06b6d4","Stock \u00B7 Prices","inventory"],
-  ["\uD83D\uDCCA","My Report","#ec4899","Work summary","report"]
+  ["\uD83D\uDCCA","My Report","#ec4899","Work \u00B7 Expense","report"]
 ];
 
 async function doLogin(){
@@ -112,6 +113,7 @@ function myStock(){
   });
   return Object.entries(held).filter(([,q])=>q>0).map(([name,qty])=>({name,qty}));
 }
+
 function myExpenses(){
   if(isAdmin()) return S.expenses;
   const n=(S.user&&S.user.name||"").toLowerCase();
@@ -188,11 +190,12 @@ function expPeriod(){
   return S.period==="today" ? new Date(now.getFullYear(),now.getMonth(),now.getDate())
     : S.period==="week" ? new Date(now.getTime()-7*864e5) : new Date(now.getFullYear(),now.getMonth(),1);
 }
+function expList(){ const c=expPeriod(); return myExpenses().filter(e=>new Date(e.created_at||e.expense_date||0)>=c); }
+function expTotal(){ return expList().reduce((s,e)=>s+Number(e.amount||0),0); }
 
 function viewExpenses(){
-  const cutoff=expPeriod();
-  const list=myExpenses().filter(e=>new Date(e.created_at||e.expense_date||0)>=cutoff);
-  const total=list.reduce((s,e)=>s+Number(e.amount||0),0);
+  const list=expList();
+  const total=expTotal();
   const tab=(k,l)=>`<button onclick="S.period='${k}';render()" style="flex:1;background:${S.period===k?'#e11d2a':'#1a1a1a'};color:${S.period===k?'#fff':'#888'};border:none;border-radius:9px;padding:9px;font-size:13px;font-weight:700;cursor:pointer">${l}</button>`;
   const rows=list.length?list.map(e=>`<div class="card">
       <div style="display:flex;justify-content:space-between;gap:10px">
@@ -211,199 +214,16 @@ function viewExpenses(){
     <div style="display:flex;gap:8px;padding:0 16px 14px">${tab("today","Today")}${tab("week","Week")}${tab("month","Month")}</div>
     <div style="padding:0 16px 14px"><div class="stat" style="text-align:center">
       <div class="l">Total ${S.period}</div><div class="v" style="color:#f59e0b">${money(total)}</div></div></div>
-    ${list.length?`<div style="padding:0 16px 14px"><button class="btn" onclick="sendExpenseReport()">\uD83D\uDCC4 Send report to office</button></div>`:""}
+    ${list.length?`<div style="padding:0 16px 14px">
+      <button class="btn" onclick="printExpenseReport()" style="margin-bottom:8px">\uD83D\uDDA8 Report PDF</button>
+      <button class="btn btn2" onclick="sendExpenseReport()">\uD83D\uDCAC Send on WhatsApp</button></div>`:""}
     <div class="sec">${list.length} expense${list.length===1?"":"s"}</div>${rows}<div style="height:20px"></div>`;
 }
 
 function sendExpenseReport(){
-  const cutoff=expPeriod();
-  const list=myExpenses().filter(e=>new Date(e.created_at||e.expense_date||0)>=cutoff);
+  const list=expList();
   if(!list.length){ toast("No expenses to report"); return; }
-  const total=list.reduce((s,e)=>s+Number(e.amount||0),0);
-  const label=S.period==="today"?"Today":S.period==="week"?"This Week":"This Month";
-  let t="*EXPENSE REPORT*\n";
-  t+="Siva's GEMPRO Technologies, Salem\n";
-  t+="Technician: "+(S.user.name||"")+"\n";
-  t+="Period: "+label+"\n";
-  t+="Generated: "+new Date().toLocaleString("en-IN")+"\n";
-  t+="--------------------------------\n";
-  list.forEach((e,i)=>{
-    t+=(i+1)+". "+(e.expense_date||"")+" "+(e.expense_time||"")+"\n";
-    t+="   "+(e.category||"")+" \u2014 \u20B9"+Number(e.amount||0)+" ("+(e.payment_mode||"")+")\n";
-    if(e.paid_to) t+="   Paid to: "+e.paid_to+"\n";
-    if(e.job_no) t+="   Site: "+e.job_no+" - "+(e.customer_name||"")+"\n";
-    if(e.site_address) t+="   Address: "+e.site_address+"\n";
-    if(e.comment) t+="   Reason: "+e.comment+"\n";
-    if(e.receipt_url) t+="   Receipt: "+e.receipt_url+"\n";
-    t+="\n";
-  });
-  t+="--------------------------------\n";
-  t+="*TOTAL: \u20B9"+total.toLocaleString("en-IN")+"*\n";
-  t+="Entries: "+list.length+"\n";
-  window.open("https://wa.me/919894522502?text="+encodeURIComponent(t),"_blank");
-}
-
-async function setStatus(id, status){
-  if(status==="Done"){ S.job = S.jobs.find(x=>String(x.id)===String(id)); S.parts=[]; S.photos=[]; go("complete"); return; }
-  if(S.busy) return; S.busy=true;
-  try{
-    const { error } = await sb.from("service_calls").update({status}).eq("id", id);
-    if(error) throw error;
-    const j = S.jobs.find(x=>String(x.id)===String(id));
-    if(j) j.status = status;
-    if(S.job && String(S.job.id)===String(id)) S.job.status = status;
-    toast("Status: " + status); render();
-  }catch(e){ console.error(e); toast("Could not update"); }
-  S.busy=false;
-}
-
-function getLocation(){
-  return new Promise(res=>{
-    if(!navigator.geolocation) return res(null);
-    navigator.geolocation.getCurrentPosition(
-      p=>res({lat:p.coords.latitude, lng:p.coords.longitude}),
-      ()=>res(null), {timeout:8000, enableHighAccuracy:true});
-  });
-}
-
-async function addPhotos(input){
-  const files = Array.from(input.files||[]);
-  if(!files.length) return;
-  toast("Uploading " + files.length + " photo(s)\u2026");
-  for(const f of files){
-    try{
-      const path = "job_" + (S.job&&S.job.id||"x") + "_" + Date.now() + "_" + Math.random().toString(36).slice(2,7) + ".jpg";
-      const { error } = await sb.storage.from("jobphotos").upload(path, f, {upsert:true});
-      if(error) throw error;
-      const { data } = sb.storage.from("jobphotos").getPublicUrl(path);
-      S.photos.push(data.publicUrl);
-    }catch(e){ console.error("photo:",e); toast("Photo upload failed"); }
-  }
-  input.value=""; render();
-}
-
-function addPart(){
-  const sel = $("psel"); const qty = Number(($("pqty").value||1));
-  if(!sel || !sel.value) { toast("Choose an item"); return; }
-  const item = S.items.find(i=>String(i.id)===sel.value);
-  if(!item) return;
-  const cust = S.job ? custOf(S.job) : null;
-  const rate = priceFor(item, cust);
-  const ex = S.parts.find(p=>p.id===item.id);
-  if(ex) ex.qty += qty; else S.parts.push({id:item.id, name:item.name, qty, rate});
-  $("pqty").value = 1; render();
-}
-function delPart(i){ S.parts.splice(i,1); render(); }
-const partsTotal = () => S.parts.reduce((s,p)=>s+p.qty*p.rate,0);
-<div style="color:#888;font-size:12px;font-weight:600;margin-top:3px">GEMPRO Technologies \u00B7 Salem</div></div>
-  function myExpenses(){
-  if(isAdmin()) return S.expenses;
-  const n=(S.user&&S.user.name||"").toLowerCase();
-  return S.expenses.filter(e=>(e.technician_name||"").toLowerCase()===n);
-}
-
-async function addReceipt(input){
-  const f=(input.files||[])[0]; if(!f) return;
-  toast("Uploading receipt\u2026");
-  try{
-    const path="rcpt_"+Date.now()+"_"+Math.random().toString(36).slice(2,7)+".jpg";
-    const {error}=await sb.storage.from("jobphotos").upload(path,f,{upsert:true});
-    if(error) throw error;
-    const {data}=sb.storage.from("jobphotos").getPublicUrl(path);
-    S.receipt=data.publicUrl; toast("Receipt attached"); render();
-  }catch(e){ console.error(e); toast("Upload failed"); }
-  input.value="";
-}
-
-async function saveExpense(){
-  if(S.busy) return;
-  const amt=parseFloat($("eamt").value||0);
-  if(!amt||amt<=0){ toast("Enter amount"); return; }
-  const jobSel=$("ejob").value;
-  const j=jobSel?S.jobs.find(x=>String(x.id)===jobSel):null;
-  S.busy=true;
-  try{
-    const now=new Date();
-    const row={ id:crypto.randomUUID(), technician_name:S.user.name, technician_id:S.user.id,
-      expense_date:now.toISOString().slice(0,10),
-      expense_time:now.toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"}),
-      category:$("ecat").value, amount:amt, payment_mode:$("emode").value,
-      paid_to:($("epaid").value||"").trim(), comment:($("ecom").value||"").trim(),
-      receipt_url:S.receipt||"",
-      job_id:j?j.id:null, job_no:j?j.job_no:"", customer_name:j?j.customer_name:"",
-      site_address:j?(j.address||""):"", status:"Pending", created_at:now.toISOString() };
-    const {error}=await sb.from("tech_expenses").insert([row]);
-    if(error) throw error;
-    S.expenses.unshift(row); S.receipt="";
-    toast("Expense recorded \u00B7 "+money(amt));
-    go("expenses");
-  }catch(e){ console.error(e); toast("Could not save expense"); }
-  S.busy=false;
-}
-
-function viewAddExpense(){
-  const jobOpts=myJobs().slice(0,60).map(j=>`<option value="${esc(j.id)}">${esc(j.job_no||"")} \u00B7 ${esc(j.customer_name||"")}</option>`).join("");
-  return `<div class="hd"><span onclick="go('expenses')" style="color:#888;font-size:22px;padding-right:4px">\u2039</span>
-      <span class="ic" style="background:#f59e0b22">\uD83D\uDCB8</span>
-      <div style="font-weight:800;font-size:17px">Add Expense</div></div>
-    <div style="padding:0 16px">
-      <div class="lbl">Category</div>
-      <select class="inp" id="ecat">${EXP_CATS.map(c=>`<option>${c}</option>`).join("")}</select>
-      <div class="lbl">Amount (\u20B9) *</div>
-      <input class="inp" id="eamt" type="number" inputmode="decimal" placeholder="0">
-      <div class="lbl">Payment mode</div>
-      <select class="inp" id="emode">${PAY_MODES.map(m=>`<option>${m}</option>`).join("")}</select>
-      <div class="lbl">Paid to</div>
-      <input class="inp" id="epaid" placeholder="Shop / person name">
-      <div class="lbl">For which job / site</div>
-      <select class="inp" id="ejob"><option value="">-- general, not job related --</option>${jobOpts}</select>
-      <div class="lbl">Explanation *</div>
-      <textarea class="inp" id="ecom" rows="2" placeholder="Why was this spent?"></textarea>
-      <div class="lbl">Receipt photo</div>
-      <label class="btn btn2" style="margin-bottom:10px">\uD83D\uDCF7 Attach receipt
-        <input type="file" accept="image/*" capture="environment" style="display:none" onchange="addReceipt(this)"></label>
-      ${S.receipt?`<img src="${esc(S.receipt)}" style="width:90px;height:90px;object-fit:cover;border-radius:9px;margin-bottom:12px;border:1px solid #2a2a2a">`:""}
-      <button class="btn" onclick="saveExpense()">Save expense</button>
-      <div style="height:24px"></div></div>`;
-}
-
-function expPeriod(){
-  const now=new Date();
-  return S.period==="today" ? new Date(now.getFullYear(),now.getMonth(),now.getDate())
-    : S.period==="week" ? new Date(now.getTime()-7*864e5) : new Date(now.getFullYear(),now.getMonth(),1);
-}
-
-function viewExpenses(){
-  const cutoff=expPeriod();
-  const list=myExpenses().filter(e=>new Date(e.created_at||e.expense_date||0)>=cutoff);
-  const total=list.reduce((s,e)=>s+Number(e.amount||0),0);
-  const tab=(k,l)=>`<button onclick="S.period='${k}';render()" style="flex:1;background:${S.period===k?'#e11d2a':'#1a1a1a'};color:${S.period===k?'#fff':'#888'};border:none;border-radius:9px;padding:9px;font-size:13px;font-weight:700;cursor:pointer">${l}</button>`;
-  const rows=list.length?list.map(e=>`<div class="card">
-      <div style="display:flex;justify-content:space-between;gap:10px">
-        <div style="min-width:0"><div style="font-size:14px;font-weight:700">${esc(e.category||"")}</div>
-        <div style="color:#888;font-size:12px;margin-top:2px">${esc(e.expense_date||"")} ${esc(e.expense_time||"")} \u00B7 ${esc(e.payment_mode||"")}</div></div>
-        <b style="color:#f59e0b;white-space:nowrap">${money(e.amount)}</b></div>
-      ${e.job_no?`<div style="color:#3b82f6;font-size:12px;margin-top:6px">\uD83D\uDCCD ${esc(e.job_no)} \u00B7 ${esc(e.customer_name||"")}</div>`:""}
-      ${e.comment?`<div style="color:#aaa;font-size:12px;margin-top:5px">${esc(e.comment)}</div>`:""}
-      ${isAdmin()&&e.technician_name?`<div style="color:#777;font-size:12px;margin-top:5px">\uD83D\uDC77 ${esc(e.technician_name)}</div>`:""}
-      ${e.receipt_url?`<a href="${esc(e.receipt_url)}" target="_blank" style="color:#22c55e;font-size:12px;text-decoration:none;display:inline-block;margin-top:6px">\uD83D\uDCC4 View receipt</a>`:""}
-    </div>`).join("")
-    :`<div class="empty"><div class="e">\uD83D\uDCB8</div><div style="margin-top:12px;font-size:14px">No expenses recorded</div></div>`;
-  return `<div class="hd"><span class="ic" style="background:#f59e0b22">\uD83D\uDCB8</span>
-      <div style="font-weight:800;font-size:17px">${isAdmin()?"All Expenses":"My Expenses"}</div>
-      <span onclick="go('addexp')" style="margin-left:auto;background:#22c55e;color:#000;font-size:13px;font-weight:800;padding:8px 14px;border-radius:9px">\uFF0B Add</span></div>
-    <div style="display:flex;gap:8px;padding:0 16px 14px">${tab("today","Today")}${tab("week","Week")}${tab("month","Month")}</div>
-    <div style="padding:0 16px 14px"><div class="stat" style="text-align:center">
-      <div class="l">Total ${S.period}</div><div class="v" style="color:#f59e0b">${money(total)}</div></div></div>
-    ${list.length?`<div style="padding:0 16px 14px"><button class="btn" onclick="sendExpenseReport()">\uD83D\uDCC4 Send report to office</button></div>`:""}
-    <div class="sec">${list.length} expense${list.length===1?"":"s"}</div>${rows}<div style="height:20px"></div>`;
-}
-
-function sendExpenseReport(){
-  const cutoff=expPeriod();
-  const list=myExpenses().filter(e=>new Date(e.created_at||e.expense_date||0)>=cutoff);
-  if(!list.length){ toast("No expenses to report"); return; }
-  const total=list.reduce((s,e)=>s+Number(e.amount||0),0);
+  const total=expTotal();
   const label=S.period==="today"?"Today":S.period==="week"?"This Week":"This Month";
   let t="*EXPENSE REPORT*\n";
   t+="GEMPRO TECHNOLOGIES, Salem\n";
@@ -417,7 +237,6 @@ function sendExpenseReport(){
     t+="   "+(e.category||"")+" \u2014 \u20B9"+Number(e.amount||0)+" ("+(e.payment_mode||"")+")\n";
     if(e.paid_to) t+="   Paid to: "+e.paid_to+"\n";
     if(e.job_no) t+="   Site: "+e.job_no+" - "+(e.customer_name||"")+"\n";
-    if(e.site_address) t+="   Address: "+e.site_address+"\n";
     if(e.comment) t+="   Reason: "+e.comment+"\n";
     if(e.receipt_url) t+="   Receipt: "+e.receipt_url+"\n";
     t+="\n";
@@ -427,7 +246,211 @@ function sendExpenseReport(){
   t+="Entries: "+list.length+"\n";
   window.open("https://wa.me/919894522502?text="+encodeURIComponent(t),"_blank");
 }
+function printExpenseReport(){
+  const list=expList();
+  if(!list.length){ toast("No expenses to report"); return; }
+  const total=expTotal();
+  const label=S.period==="today"?"Today":S.period==="week"?"This Week":"This Month";
+  const rows=list.map((e,i)=>`<tr><td>${i+1}</td><td>${esc(e.expense_date||"")}<br><span style="color:#666">${esc(e.expense_time||"")}</span></td>
+    <td>${esc(e.category||"")}</td><td>${esc(e.job_no||"-")}<br><span style="color:#666">${esc(e.customer_name||"")}</span></td>
+    <td>${esc(e.comment||"")}</td><td>${esc(e.payment_mode||"")}</td>
+    <td style="text-align:right">${Number(e.amount||0).toFixed(2)}</td></tr>`).join("");
+  const w=window.open("","_blank");
+  w.document.write(`<html><head><title>Expense Report</title><style>
+    body{font-family:Arial,sans-serif;padding:20px;color:#000;font-size:12px}
+    h2{color:#e11d2a;margin:0}table{width:100%;border-collapse:collapse;margin-top:14px}
+    th,td{border:1px solid #ccc;padding:6px;font-size:11px;vertical-align:top}th{background:#f4f4f4;text-align:left}
+    .tot{text-align:right;margin-top:12px;font-size:15px}
+    </style></head><body>
+    <h2>GEMPRO TECHNOLOGIES</h2>
+    <div>Salem, Tamil Nadu &nbsp;|&nbsp; GSTIN: 33BQAPT7336P1Z9</div>
+    <hr><h3 style="margin:8px 0">TECHNICIAN EXPENSE REPORT</h3>
+    <div><b>Technician:</b> ${esc(isAdmin()?"All staff":S.user.name)} &nbsp;&nbsp;
+    <b>Period:</b> ${label} &nbsp;&nbsp; <b>Generated:</b> ${new Date().toLocaleString("en-IN")}</div>
+    <table><thead><tr><th>#</th><th>Date / Time</th><th>Category</th><th>Site / Job</th><th>Explanation</th><th>Mode</th><th style="text-align:right">Amount</th></tr></thead>
+    <tbody>${rows}</tbody></table>
+    <div class="tot"><b>TOTAL: \u20B9${total.toFixed(2)}</b> &nbsp; (${list.length} entries)</div>
+    <p style="margin-top:26px;font-size:11px">Submitted by: ${esc(S.user.name)} \u00B7 ${new Date().toLocaleString("en-IN")}</p>
+    </body></html>`);
+  w.document.close(); setTimeout(()=>w.print(),400);
+}
 
+function billCustSearch(q){
+  const box=$("bcresults"); if(!box) return;
+  q=(q||"").toLowerCase().trim();
+  if(q.length<2){ box.innerHTML=""; return; }
+  const hits=S.customers.filter(c=>(c.name||"").toLowerCase().includes(q)||(c.mobile||"").includes(q)).slice(0,8);
+  box.innerHTML = hits.length ? hits.map(c=>`<div onclick="pickBillCust('${esc(c.id)}')" style="padding:11px 12px;border-bottom:1px solid #222;cursor:pointer">
+      <div style="font-size:14px;font-weight:700">${esc(c.name)}</div>
+      <div style="color:#888;font-size:12px">${esc(c.mobile||"")} \u00B7 ${esc(c.sales_category||"RETAIL")}</div></div>`).join("")
+    : `<div style="padding:11px;color:#666;font-size:13px">No customer found</div>`;
+}
+function pickBillCust(id){
+  S.billCust = S.customers.find(x=>String(x.id)===String(id)) || null;
+  S.bill = S.bill.map(b=>{ const it=S.items.find(i=>String(i.id)===String(b.id));
+    return it?{...b, rate:priceFor(it,S.billCust)}:b; });
+  render();
+}
+function itemSearch(q){
+  const box=$("iresults"); if(!box) return;
+  q=(q||"").toLowerCase().trim();
+  if(q.length<2){ box.innerHTML=""; return; }
+  const hits=S.items.filter(i=>(i.name||"").toLowerCase().includes(q)||(i.model_no||"").toLowerCase().includes(q)||(i.code||"").toLowerCase().includes(q)).slice(0,10);
+  box.innerHTML = hits.length ? hits.map(i=>{
+    const r=priceFor(i,S.billCust);
+    return `<div onclick="addBillItem('${esc(i.id)}')" style="padding:11px 12px;border-bottom:1px solid #222;cursor:pointer;display:flex;justify-content:space-between;gap:10px">
+      <div style="min-width:0"><div style="font-size:14px;font-weight:700">${esc(i.name)}</div>
+      <div style="color:#888;font-size:12px">${esc(i.model_no||i.code||"")} \u00B7 stock ${Number(i.stock_qty||0)}</div></div>
+      <b style="color:#22c55e;white-space:nowrap">${money(r)}</b></div>`;}).join("")
+    : `<div style="padding:11px;color:#666;font-size:13px">No item found</div>`;
+}
+function addBillItem(id){
+  const it=S.items.find(x=>String(x.id)===String(id)); if(!it) return;
+  const ex=S.bill.find(b=>String(b.id)===String(id));
+  if(ex) ex.qty+=1;
+  else S.bill.push({id:it.id,name:it.name,qty:1,rate:priceFor(it,S.billCust),gst:Number(it.gst_rate||18)});
+  $("isearch").value=""; $("iresults").innerHTML="";
+  render();
+}
+function billQty(i,d){ S.bill[i].qty=Math.max(1,S.bill[i].qty+d); render(); }
+function delBillItem(i){ S.bill.splice(i,1); render(); }
+const billSub = () => S.bill.reduce((s,b)=>s+b.qty*b.rate,0);
+const billGst = () => S.bill.reduce((s,b)=>s+(b.qty*b.rate*(b.gst||18)/100),0);
+const billTotal = () => billSub()+billGst();
+
+async function saveInvoice(paid){
+  if(S.busy) return;
+  if(!S.billCust){ toast("Select a customer"); return; }
+  if(!S.bill.length){ toast("Add at least one item"); return; }
+  S.busy=true;
+  try{
+    const invNo="INV"+Date.now().toString().slice(-8);
+    const row={ id:crypto.randomUUID(), invoice_no:invNo, invoice_date:new Date().toISOString().slice(0,10),
+      customer_id:S.billCust.id, customer_name:S.billCust.name, customer_mobile:S.billCust.mobile||"",
+      customer_gstin:S.billCust.gstin||"", price_list:(S.billCust.sales_category||"RETAIL"),
+      items:S.bill, subtotal:billSub(), gst_amount:billGst(), total:billTotal(),
+      payment_status:paid?"Paid":"Unpaid", payment_mode:paid?$("bmode").value:"",
+      created_by:S.user.name, created_at:new Date().toISOString() };
+    const {error}=await sb.from("invoices").insert([row]);
+    if(error) throw error;
+    S.lastInvoice=row; S.bill=[]; S.billCust=null;
+    toast("Invoice "+invNo+" created");
+    go("invdone");
+  }catch(e){ console.error(e); toast("Could not save invoice"); }
+  S.busy=false;
+}
+
+function viewBilling(){
+  const rows=S.bill.map((b,i)=>`<div class="card" style="margin:0 0 8px">
+      <div style="display:flex;justify-content:space-between;gap:10px">
+        <div style="min-width:0"><div style="font-size:14px;font-weight:700">${esc(b.name)}</div>
+        <div style="color:#888;font-size:12px">${money(b.rate)} \u00D7 ${b.qty} + ${b.gst||18}% GST</div></div>
+        <b style="color:#22c55e;white-space:nowrap">${money(b.qty*b.rate)}</b></div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+        <button onclick="billQty(${i},-1)" style="background:#222;color:#fff;border:none;width:34px;height:34px;border-radius:8px;font-size:18px">\u2212</button>
+        <span style="min-width:30px;text-align:center;font-weight:700">${b.qty}</span>
+        <button onclick="billQty(${i},1)" style="background:#222;color:#fff;border:none;width:34px;height:34px;border-radius:8px;font-size:18px">+</button>
+        <span onclick="delBillItem(${i})" style="margin-left:auto;color:#e11d2a;font-size:13px;font-weight:700">Remove</span></div></div>`).join("");
+  return `<div class="hd"><span class="ic" style="background:#e11d2a22">\uD83E\uDDFE</span>
+      <div style="font-weight:800;font-size:17px">Create Invoice</div></div>
+    <div style="padding:0 16px">
+      <div class="lbl">Customer *</div>
+      ${S.billCust?`<div class="card" style="margin:0 0 10px;display:flex;justify-content:space-between;align-items:center">
+        <div><div style="font-size:14px;font-weight:700">${esc(S.billCust.name)}</div>
+        <div style="color:#888;font-size:12px">${esc(S.billCust.mobile||"")} \u00B7 ${esc(S.billCust.sales_category||"RETAIL")} price</div></div>
+        <span onclick="S.billCust=null;render()" style="color:#e11d2a;font-size:13px;font-weight:700">Change</span></div>`
+        :`<input class="inp" id="bcsearch" placeholder="\uD83D\uDD0D Search customer name or mobile" oninput="billCustSearch(this.value)" style="margin-bottom:0">
+          <div id="bcresults" style="background:#161616;border-radius:0 0 10px 10px;max-height:200px;overflow:auto;margin-bottom:10px"></div>`}
+
+      <div class="lbl">Add items</div>
+      <input class="inp" id="isearch" placeholder="\uD83D\uDD0D Type product name, model or code" oninput="itemSearch(this.value)" style="margin-bottom:0">
+      <div id="iresults" style="background:#161616;border-radius:0 0 10px 10px;max-height:250px;overflow:auto;margin-bottom:12px"></div>
+
+      ${rows||`<div style="color:#555;font-size:13px;margin-bottom:12px">No items added yet</div>`}
+
+      ${S.bill.length?`<div class="card" style="margin:0 0 12px">
+        <div class="kv"><span>Subtotal</span><b>${money(billSub())}</b></div>
+        <div class="kv"><span>GST</span><b>${money(billGst())}</b></div>
+        <div class="kv" style="border-top:1px solid #2a2a2a;margin-top:6px;padding-top:9px">
+          <span style="font-weight:700;color:#eee">TOTAL</span><b style="color:#22c55e;font-size:18px">${money(billTotal())}</b></div></div>
+        <div class="lbl">Payment mode</div>
+        <select class="inp" id="bmode">${PAY_MODES.map(m=>`<option>${m}</option>`).join("")}</select>
+        <button class="btn" onclick="saveInvoice(true)" style="margin-bottom:8px">\u2714 Save \u00B7 Paid</button>
+        <button class="btn btn2" onclick="saveInvoice(false)">\u2714 Save \u00B7 Credit / Unpaid</button>`:""}
+      <div style="height:24px"></div></div>`;
+}
+
+function waLink(mob, text){
+  const n = String(mob||"").replace(/\D/g,"").slice(-10);
+  return "https://wa.me/91" + n + "?text=" + encodeURIComponent(text);
+}
+
+function invoiceText(v){
+  let t="*TAX INVOICE*\n";
+  t+="GEMPRO TECHNOLOGIES, Salem\n";
+  t+="GSTIN: 33BQAPT7336P1Z9\n";
+  t+="Ph: 9894522502\n";
+  t+="--------------------------------\n";
+  t+="Invoice: "+v.invoice_no+"\n";
+  t+="Date: "+new Date(v.created_at).toLocaleDateString("en-IN")+"\n";
+  t+="Customer: "+v.customer_name+"\n";
+  if(v.customer_gstin) t+="GSTIN: "+v.customer_gstin+"\n";
+  t+="--------------------------------\n";
+  (v.items||[]).forEach((b,i)=>{
+    t+=(i+1)+". "+b.name+"\n";
+    t+="   "+b.qty+" x \u20B9"+b.rate+" = \u20B9"+(b.qty*b.rate)+"\n";
+  });
+  t+="--------------------------------\n";
+  t+="Subtotal: \u20B9"+v.subtotal.toFixed(2)+"\n";
+  t+="GST: \u20B9"+v.gst_amount.toFixed(2)+"\n";
+  t+="*TOTAL: \u20B9"+v.total.toFixed(2)+"*\n";
+  t+="Status: "+v.payment_status+(v.payment_mode?" ("+v.payment_mode+")":"")+"\n";
+  t+="\nThank you for your business!";
+  return t;
+}
+
+function viewInvDone(){
+  const v=S.lastInvoice; if(!v) return viewBilling();
+  return `<div style="padding:40px 24px;text-align:center">
+      <div style="font-size:56px">\u2705</div>
+      <div style="font-size:20px;font-weight:800;margin-top:10px">Invoice Created</div>
+      <div style="color:#888;font-size:13px;margin-top:4px">${esc(v.invoice_no)} \u00B7 ${esc(v.customer_name)}</div>
+      <div style="color:#22c55e;font-size:26px;font-weight:800;margin-top:12px">${money(v.total)}</div>
+      <div style="color:#888;font-size:12px">${esc(v.payment_status)}</div></div>
+    <div style="padding:0 16px">
+      ${v.customer_mobile?`<a class="btn" style="text-decoration:none;margin-bottom:10px;background:#22c55e" href="${esc(waLink(v.customer_mobile,invoiceText(v)))}" target="_blank">\uD83D\uDCAC Send invoice on WhatsApp</a>`:""}
+      <button class="btn btn2" style="margin-bottom:10px" onclick="printInvoice()">\uD83D\uDDA8 Print / Save PDF</button>
+      <button class="btn btn2" onclick="go('billing')">New invoice</button>
+      <div style="height:24px"></div></div>`;
+}
+
+function printInvoice(){
+  const v=S.lastInvoice; if(!v) return;
+  const rows=(v.items||[]).map((b,i)=>`<tr><td>${i+1}</td><td>${esc(b.name)}</td><td style="text-align:center">${b.qty}</td>
+    <td style="text-align:right">${Number(b.rate).toFixed(2)}</td><td style="text-align:right">${(b.qty*b.rate).toFixed(2)}</td></tr>`).join("");
+  const w=window.open("","_blank");
+  w.document.write(`<html><head><title>${v.invoice_no}</title><style>
+    body{font-family:Arial,sans-serif;padding:20px;color:#000;font-size:13px}
+    h2{color:#e11d2a;margin:0}table{width:100%;border-collapse:collapse;margin-top:14px}
+    th,td{border:1px solid #ccc;padding:7px;font-size:12px}th{background:#f4f4f4;text-align:left}
+    .tot{text-align:right;margin-top:12px;font-size:14px}.tot b{font-size:17px;color:#e11d2a}
+    </style></head><body>
+    <h2>GEMPRO TECHNOLOGIES</h2>
+    <div>Salem, Tamil Nadu &nbsp;|&nbsp; GSTIN: 33BQAPT7336P1Z9 &nbsp;|&nbsp; Ph: 9894522502</div>
+    <hr><h3 style="margin:8px 0">TAX INVOICE</h3>
+    <div><b>Invoice:</b> ${esc(v.invoice_no)} &nbsp;&nbsp; <b>Date:</b> ${new Date(v.created_at).toLocaleDateString("en-IN")}</div>
+    <div><b>Customer:</b> ${esc(v.customer_name)} ${v.customer_mobile?" \u00B7 "+esc(v.customer_mobile):""}</div>
+    ${v.customer_gstin?`<div><b>Customer GSTIN:</b> ${esc(v.customer_gstin)}</div>`:""}
+    <table><thead><tr><th>#</th><th>Item</th><th style="text-align:center">Qty</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead>
+    <tbody>${rows}</tbody></table>
+    <div class="tot">Subtotal: \u20B9${Number(v.subtotal).toFixed(2)}<br>
+    GST: \u20B9${Number(v.gst_amount).toFixed(2)}<br>
+    <b>TOTAL: \u20B9${Number(v.total).toFixed(2)}</b><br>
+    Status: ${esc(v.payment_status)} ${v.payment_mode?"("+esc(v.payment_mode)+")":""}</div>
+    <p style="margin-top:26px;font-size:12px">Thank you for your business!<br>Prepared by: ${esc(v.created_by||"")}</p>
+    </body></html>`);
+  w.document.close(); setTimeout(()=>w.print(),400);
+}
 async function setStatus(id, status){
   if(status==="Done"){ S.job = S.jobs.find(x=>String(x.id)===String(id)); S.parts=[]; S.photos=[]; go("complete"); return; }
   if(S.busy) return; S.busy=true;
@@ -480,6 +503,7 @@ function addPart(){
 }
 function delPart(i){ S.parts.splice(i,1); render(); }
 const partsTotal = () => S.parts.reduce((s,p)=>s+p.qty*p.rate,0);
+
 async function finishJob(paid){
   if(S.busy) return; S.busy=true;
   toast("Saving\u2026");
@@ -489,11 +513,8 @@ async function finishJob(paid){
     const j = S.job;
     const prev = j.work_done ? j.work_done + "\n" : "";
     const patch = {
-      status: "Done",
-      completed_at: new Date().toISOString(),
-      photos: S.photos,
-      parts_used: S.parts,
-      bill_total: partsTotal(),
+      status: "Done", completed_at: new Date().toISOString(),
+      photos: S.photos, parts_used: S.parts, bill_total: partsTotal(),
       payment_status: paid ? "Paid" : "Unpaid",
       work_done: note ? prev + new Date().toLocaleDateString("en-IN") + " \u2014 " + note : j.work_done
     };
@@ -507,10 +528,6 @@ async function finishJob(paid){
   S.busy=false;
 }
 
-function waLink(mob, text){
-  const n = String(mob||"").replace(/\D/g,"").slice(-10);
-  return "https://wa.me/91" + n + "?text=" + encodeURIComponent(text);
-}
 function billText(j){
   let t = "Dear " + (j.customer_name||"Customer") + ",\n\nService completed \u2014 " + (j.job_no||"") + "\n";
   if((j.parts_used||[]).length){
@@ -542,7 +559,6 @@ function viewComplete(){
       <label class="btn btn2" style="margin-bottom:10px">\uD83D\uDCF7 Take / choose photos
         <input type="file" accept="image/*" capture="environment" multiple style="display:none" onchange="addPhotos(this)"></label>
       ${pics?`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">${pics}</div>`:`<div style="color:#555;font-size:12px;margin-bottom:14px">No photos yet</div>`}
-
       <div class="sec" style="margin-left:0">2. Parts used <span style="color:#666;font-weight:600">(${esc(cat)} price)</span></div>
       <select class="inp" id="psel"><option value="">-- choose item --</option>${opts}</select>
       <div style="display:flex;gap:8px;margin-bottom:10px">
@@ -552,10 +568,8 @@ function viewComplete(){
         <div class="kv" style="border-top:1px solid #2a2a2a;margin-top:6px;padding-top:9px">
         <span style="font-weight:700;color:#eee">TOTAL</span><b style="color:#22c55e;font-size:16px">${money(partsTotal())}</b></div></div>`
         :`<div style="color:#555;font-size:12px;margin-bottom:12px">No parts added</div>`}
-
       <div class="sec" style="margin-left:0">3. Work note</div>
       <textarea class="inp" id="cnote" rows="2" placeholder="What was done?"></textarea>
-
       <div class="sec" style="margin-left:0">4. Finish</div>
       <button class="btn" onclick="finishJob(true)" style="margin-bottom:8px">\u2714 Complete \u00B7 Paid on site</button>
       <button class="btn btn2" onclick="finishJob(false)">\u2714 Complete \u00B7 Bill to office</button>
@@ -586,7 +600,7 @@ function viewIssue(){
   const rows = S.issueCart.map((p,i)=>`<div class="kv"><span>${esc(p.name)}</span>
       <b>\u00D7${p.qty} <span onclick="delIssueItem(${i})" style="color:#e11d2a;margin-left:8px">\u2715</span></b></div>`).join("");
   return `<div class="hd"><span class="ic" style="background:#22c55e22">\uD83D\uDE9A</span>
-      <div style="font-weight:800;font-size:17px">Issue Stock to Technician</div></div>
+      <div style="font-weight:800;font-size:17px">Issue Stock</div></div>
     <div style="padding:0 16px">
       <div class="lbl">Technician</div>
       ${isAdmin()?`<select class="inp" id="itech"><option value="">-- choose --</option>${techOpts}</select>`
@@ -662,6 +676,7 @@ function viewMyStock(){
       <span onclick="go('issue')" style="margin-left:auto;background:#1f1f1f;color:#aaa;font-size:12px;font-weight:700;padding:8px 12px;border-radius:9px">Self-issue</span></div>
     <div class="sec">Items currently with you</div>${rows}<div style="height:20px"></div>`;
 }
+
 async function createJob(){
   if(S.busy) return;
   const f = { customer_name:($("fname").value||"").trim(), customer_mobile:($("fmob").value||"").trim(),
@@ -681,23 +696,37 @@ async function createJob(){
   S.busy=false;
 }
 
-function pickCustomer(name){
-  const c = S.customers.find(x=>x.name===name);
-  if(c){ if($("fmob")&&!$("fmob").value) $("fmob").value = c.mobile||"";
-         if($("faddr")&&!$("faddr").value) $("faddr").value = [c.address,c.city].filter(Boolean).join(", "); }
+function custSearch(q){
+  const box=$("cresults"); if(!box) return;
+  q=(q||"").toLowerCase().trim();
+  if(q.length<2){ box.innerHTML=""; return; }
+  const hits=S.customers.filter(c=>(c.name||"").toLowerCase().includes(q)||(c.mobile||"").includes(q)).slice(0,8);
+  box.innerHTML = hits.length ? hits.map(c=>`<div onclick="pickCust('${esc(c.id)}')" style="padding:11px 12px;border-bottom:1px solid #222;cursor:pointer">
+      <div style="font-size:14px;font-weight:700">${esc(c.name)}</div>
+      <div style="color:#888;font-size:12px">${esc(c.mobile||"")} \u00B7 ${esc(c.city||"")} \u00B7 ${esc(c.sales_category||"RETAIL")}</div></div>`).join("")
+    : `<div style="padding:11px;color:#666;font-size:13px">No match \u2014 type full name to add new</div>`;
+}
+function pickCust(id){
+  const c=S.customers.find(x=>String(x.id)===String(id)); if(!c) return;
+  $("fname").value=c.name||"";
+  $("fmob").value=c.mobile||"";
+  $("faddr").value=[c.address,c.city].filter(Boolean).join(", ");
+  $("csearch").value=c.name||"";
+  $("cresults").innerHTML="";
+  toast("Customer selected");
 }
 
 function viewNewJob(){
   const techOpts = S.techs.map(t=>`<option value="${esc(t.full_name)}"${(!isAdmin()&&t.full_name===S.user.name)?" selected":""}>${esc(t.full_name)}</option>`).join("");
-  const custOpts = S.customers.map(c=>`<option value="${esc(c.name)}">${esc(c.name)}${c.mobile?" \u00B7 "+esc(c.mobile):""}</option>`).join("");
   return `<div class="hd"><span onclick="go('jobs')" style="color:#888;font-size:22px;padding-right:4px">\u2039</span>
       <span class="ic" style="background:#22c55e22">\u2795</span>
       <div style="font-weight:800;font-size:17px">New Service Call</div></div>
     <div style="padding:0 16px">
-      <div class="lbl">Customer *</div>
-      <select class="inp" onchange="if(this.value){$('fname').value=this.value;pickCustomer(this.value);}">
-        <option value="">-- pick existing customer --</option>${custOpts}</select>
-      <input class="inp" id="fname" placeholder="or type new customer name">
+      <div class="lbl">Search existing customer</div>
+      <input class="inp" id="csearch" placeholder="\uD83D\uDD0D Type name or mobile" oninput="custSearch(this.value)" style="margin-bottom:0">
+      <div id="cresults" style="background:#161616;border-radius:0 0 10px 10px;max-height:230px;overflow:auto;margin-bottom:10px"></div>
+      <div class="lbl">Customer name *</div>
+      <input class="inp" id="fname" placeholder="Customer name">
       <div class="lbl">Mobile number</div>
       <input class="inp" id="fmob" type="tel" inputmode="numeric" placeholder="Mobile number">
       <div class="lbl">Address</div>
@@ -782,7 +811,7 @@ function viewHome(){
       <div style="color:#888;font-size:11px;font-weight:600">${esc(S.user.name)} \u00B7 ${isAdmin()?"Admin":"Technician"}</div></div>
       <span onclick="logout()" style="margin-left:auto;color:#666;font-size:12px;font-weight:700;padding:6px 10px;border:1px solid #2a2a2a;border-radius:8px">Exit</span></div>
     <div style="display:flex;gap:10px;padding:0 16px 10px">${statBox("Pending",pending,"#f59e0b")}${statBox("Ongoing",ongoing,"#3b82f6")}</div>
-    <div style="display:flex;gap:10px;padding:0 16px 18px">${statBox("Done",jobs.filter(isDone).length,"#22c55e")}${statBox(isAdmin()?"Products":"My Stock",isAdmin()?S.items.length:myStock().length,"#06b6d4")}</div>
+    <div style="display:flex;gap:10px;padding:0 16px 18px">${statBox("Done",jobs.filter(isDone).length,"#22c55e")}${statBox("Expenses",money(expTotal()),"#f43f5e")}</div>
     <div class="sec">Quick Access</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 16px">${tiles}</div>
     <div style="height:20px"></div>`;
@@ -790,8 +819,7 @@ function viewHome(){
 
 function viewReport(){
   const jobs = myJobs(); const now = new Date();
-  const cutoff = S.period==="today" ? new Date(now.getFullYear(),now.getMonth(),now.getDate())
-    : S.period==="week" ? new Date(now.getTime()-7*864e5) : new Date(now.getFullYear(),now.getMonth(),1);
+  const cutoff = expPeriod();
   const per = jobs.filter(j=>new Date(j.created_at||j.scheduled_date||0) >= cutoff);
   const done = per.filter(isDone), ong = per.filter(isOngoing), pend = per.filter(j=>!isDone(j)&&!isOngoing(j));
   const billed = done.reduce((s,j)=>s+Number(j.bill_total||0),0);
@@ -803,60 +831,30 @@ function viewReport(){
         <span style="color:${jobColor(j)};font-size:11px;font-weight:700">${esc(j.status||"")}</span></div></div>`).join("")
       : `<div style="color:#555;font-size:13px;padding:0 16px 12px">None</div>`;
   return `<div class="hd"><span class="ic" style="background:#ec489922">\uD83D\uDCCA</span>
-      <div style="font-weight:800;font-size:17px">${isAdmin()?"Service Report":"My Report"}</div></div>
+      <div style="font-weight:800;font-size:17px">${isAdmin()?"Reports":"My Report"}</div></div>
     <div style="display:flex;gap:8px;padding:0 16px 16px">${tab("today","Today")}${tab("week","Week")}${tab("month","Month")}</div>
     <div style="display:flex;gap:10px;padding:0 16px 10px">${statBox("Completed",done.length,"#22c55e")}${statBox("Ongoing",ong.length,"#3b82f6")}</div>
     <div style="display:flex;gap:10px;padding:0 16px 18px">${statBox("Pending",pend.length,"#f59e0b")}${statBox("Billed",money(billed),"#8b5cf6")}</div>
     <div class="sec">Pending \u00B7 ${pend.length}</div>${list(pend)}
     <div class="sec">Ongoing \u00B7 ${ong.length}</div>${list(ong)}
     <div class="sec">Completed \u00B7 ${done.length}</div>${list(done)}
+    <div class="sec" style="margin-top:22px">Expense Report</div>
+    <div style="padding:0 16px">
+      <div class="card" style="margin:0 0 10px">
+        <div class="kv"><span>Entries</span><b>${expList().length}</b></div>
+        <div class="kv"><span>Total spent</span><b style="color:#f59e0b">${money(expTotal())}</b></div></div>
+      <button class="btn" onclick="printExpenseReport()" style="margin-bottom:8px">\uD83D\uDDA8 Expense report PDF</button>
+      <button class="btn btn2" style="margin-bottom:8px" onclick="sendExpenseReport()">\uD83D\uDCAC Send on WhatsApp</button>
+      <button class="btn btn2" onclick="go('expenses')">View all expenses</button></div>
     <div style="height:20px"></div>`;
 }
 
-function viewInventory(){
-  const q = (S.q||"").toLowerCase();
-  const list = S.items.filter(i=>!q||(i.name||"").toLowerCase().includes(q)||(i.model_no||"").toLowerCase().includes(q)||(i.code||"").toLowerCase().includes(q));
-  const rows = list.length ? list.map(i=>{
-    const st = Number(i.stock_qty||0), c = st>0?"#22c55e":"#e11d2a";
-    return `<div class="card"><div style="display:flex;justify-content:space-between;gap:10px">
-        <div style="min-width:0"><div style="font-size:14px;font-weight:700">${esc(i.name)}</div>
-        <div style="color:#888;font-size:12px;margin-top:3px">${esc(i.model_no||i.code||"")}${i.brand?" \u00B7 "+esc(i.brand):""}</div></div>
-        <span class="pill" style="background:${c}22;color:${c};align-self:flex-start">${st} ${esc(i.unit||"Nos")}</span></div>
-      <div style="display:flex;gap:14px;margin-top:9px;font-size:12px;flex-wrap:wrap">
-        <span style="color:#22c55e;font-weight:700">Retail ${money(i.retail_price)}</span>
-        <span style="color:#3b82f6;font-weight:700">Dealer ${money(i.dealer_price)}</span>
-        <span style="color:#8b5cf6;font-weight:700">W/S ${money(i.wholesale_price)}</span></div></div>`;
-  }).join("") : `<div class="empty"><div class="e">\uD83D\uDCE6</div><div style="margin-top:12px;font-size:14px">No products found</div></div>`;
-  return `<div class="hd"><span class="ic" style="background:#06b6d422">\uD83D\uDCE6</span>
-      <div style="font-weight:800;font-size:17px">Inventory</div></div>
-    <div style="padding:0 16px 12px"><input class="inp" placeholder="\uD83D\uDD0D Search product, model, code" value="${esc(S.q||"")}" oninput="S.q=this.value;render();this.focus()"></div>
-    <div class="sec">${list.length} product${list.length===1?"":"s"}</div>${rows}<div style="height:20px"></div>`;
-}
-
-function viewCustomers(){
-  const q=(S.q||"").toLowerCase();
-  const list=S.customers.filter(c=>!q||(c.name||"").toLowerCase().includes(q)||(c.mobile||"").includes(q)||(c.city||"").toLowerCase().includes(q));
-  const rows = list.length ? list.map(c=>{
-    const cat=(c.sales_category||"RETAIL");
-    const cc = cat==="DEALER"?"#3b82f6":cat==="WHOLESALE"?"#8b5cf6":"#22c55e";
-    return `<div class="card"><div style="display:flex;justify-content:space-between;gap:10px">
-        <div style="min-width:0"><div style="font-size:14px;font-weight:700">${esc(c.name)}</div>
-        <div style="color:#888;font-size:12px;margin-top:3px">${esc(c.city||"Salem")}</div></div>
-        <span class="pill" style="background:${cc}22;color:${cc};align-self:flex-start">${esc(cat)}</span></div>
-      ${c.mobile?`<a href="tel:${esc(c.mobile)}" style="color:#3b82f6;text-decoration:none;font-size:12px;display:inline-block;margin-top:8px">\uD83D\uDCDE ${esc(c.mobile)}</a>`:""}</div>`;
-  }).join("") : `<div class="empty"><div class="e">\uD83D\uDC65</div><div style="margin-top:12px;font-size:14px">No customers yet</div></div>`;
-  return `<div class="hd"><span class="ic" style="background:#8b5cf622">\uD83D\uDC65</span>
-      <div style="font-weight:800;font-size:17px">Customers</div></div>
-    <div style="padding:0 16px 12px"><input class="inp" placeholder="\uD83D\uDD0D Search name, mobile, city" value="${esc(S.q||"")}" oninput="S.q=this.value;render();this.focus()"></div>
-    <div class="sec">${list.length} customer${list.length===1?"":"s"}</div>${rows}<div style="height:20px"></div>`;
-}
-
 function viewMore(){
-  const items=[["\uD83D\uDCE6","Inventory","inventory"],["\uD83D\uDC65","Customers","customers"],
+  const items=[["\uD83E\uDDFE","Create Invoice","billing"],
     ["\uD83D\uDCB8",isAdmin()?"All Expenses":"My Expenses","expenses"],
     ["\uD83D\uDE9A",isAdmin()?"Issue Stock":"My Stock",isAdmin()?"issue":"mystock"],
     ["\uD83D\uDCCB","Issue Log","issuelog"],
-    ["\uD83D\uDCCA",isAdmin()?"Service Report":"My Report","report"],["\uD83D\uDD04","Refresh data","refresh"]];
+    ["\uD83D\uDCCA",isAdmin()?"Reports":"My Report","report"],["\uD83D\uDD04","Refresh data","refresh"]];
   return `<div class="hd"><div style="font-weight:800;font-size:17px">More</div></div>
     ${items.map(i=>`<div class="row" onclick="go('${i[2]}')"><span style="font-size:20px;width:26px">${i[0]}</span>
       <span style="color:#eee;font-size:15px;font-weight:600">${i[1]}</span>
@@ -867,10 +865,10 @@ function viewMore(){
       ${esc(S.user.name)} \u00B7 ${isAdmin()?"Admin":"Technician"}<br>GEMPRO Technologies \u00B7 Salem</div>`;
 }
 
-const VIEWS = { home:viewHome, inventory:viewInventory, jobs:viewJobs, customers:viewCustomers,
-  more:viewMore, report:viewReport, newjob:viewNewJob, jobdetail:viewJobDetail,
-  complete:viewComplete, jobdone:viewJobDone, issue:viewIssue, issuelog:viewIssueLog, mystock:viewMyStock,
-  expenses:viewExpenses, addexp:viewAddExpense };
+const VIEWS = { home:viewHome, jobs:viewJobs, more:viewMore, report:viewReport,
+  newjob:viewNewJob, jobdetail:viewJobDetail, complete:viewComplete, jobdone:viewJobDone,
+  issue:viewIssue, issuelog:viewIssueLog, mystock:viewMyStock,
+  expenses:viewExpenses, addexp:viewAddExpense, billing:viewBilling, invdone:viewInvDone };
 
 function openJob(id){ S.job = S.jobs.find(x=>String(x.id)===String(id)); S.view="jobdetail"; window.scrollTo(0,0); render(); }
 function go(v){
@@ -881,7 +879,7 @@ function go(v){
 function renderNav(){
   if(!S.user){ $("nav").style.display="none"; return; }
   $("nav").style.display="flex";
-  const tabs=[["home","\uD83C\uDFE0","Home"],["jobs","\uD83D\uDD27","Jobs"],["add","",""],["expenses","\uD83D\uDCB8","Expense"],["more","\u2630","More"]];
+  const tabs=[["home","\uD83C\uDFE0","Home"],["jobs","\uD83D\uDD27","Jobs"],["add","",""],["billing","\uD83E\uDDFE","Bill"],["more","\u2630","More"]];
   $("nav").innerHTML = tabs.map(t=>{
     if(t[0]==="add") return `<button onclick="go('newjob')"><span class="fab">\uFF0B</span></button>`;
     return `<button class="${S.view===t[0]?"on":""}" onclick="go('${t[0]}')"><span style="font-size:21px">${t[1]}</span>${t[2]}</button>`;
@@ -898,5 +896,3 @@ function render(){
 S.user = loadUser();
 if(S.user){ loadAll(); } else { render(); }
 if("serviceWorker" in navigator){ navigator.serviceWorker.register("sw.js").catch(()=>{}); }
-
-
